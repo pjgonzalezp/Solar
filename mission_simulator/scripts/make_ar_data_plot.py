@@ -1,0 +1,184 @@
+#from flare_mission_sim import flare_mission_sim
+import flare_mission_sim
+#import flare_mission_sim as fm
+import __init__ as fm
+from collections import Counter
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import seaborn as sns
+
+def make_ar_data_plot():
+    number_of_flares_observed = 0
+    total_flares_occurring = 0
+    number_of_flaring_regions = []
+    number_of_flares_this_day = []
+    total_ars_per_flareday = []
+    
+    flares = flare_mission_sim.load_flare_data_from_hdf5()
+    flares2 = flares[flare_mission_sim.fm.PHASE_E[0]:flare_mission_sim.fm.PHASE_E[1]]
+    flares3 = flares2[flares2['goes_class'].str.contains('X|M')]
+    flares4 =  flare_mission_sim.fix_flare_positions_sff(flares3)
+    flares5 = flare_mission_sim.fix_flare_positions_manual(flares4)
+
+    phase_e_days = (flare_mission_sim.fm.PHASE_E[1] - flare_mission_sim.fm.PHASE_E[0]).days
+    
+    unique_dates = []
+    for t in flares5.index:
+        key_date = t.date().isoformat()
+        if not key_date in unique_dates:
+            unique_dates.append(key_date)
+
+
+    number_of_flare_days = len(unique_dates)
+    number_of_noflare_days = phase_e_days - number_of_flare_days
+    
+    for key_date in unique_dates:
+
+        todays_flares = flares5[key_date]['noaa']
+        flares_from_each_region = Counter(todays_flares)
+        # find the AR that produced the most flares
+        best_noaa = flares_from_each_region.most_common(n=1)
+        number_of_flares_observed += best_noaa[0][1]
+        total_flares_occurring += len(todays_flares)
+        number_of_flares_this_day.append(len(todays_flares))
+        number_of_flaring_regions.append(len(flares_from_each_region))
+
+        print(key_date, number_of_flares_observed)
+
+
+    print('Number of flares observed: ' + str(number_of_flares_observed))
+    print('Total flares available: ' + str(total_flares_occurring))
+
+    # make sure to include all the zero entries in histograms
+    print(number_of_noflare_days)
+    for k in range(0,number_of_noflare_days):
+        number_of_flaring_regions.append(0)
+        number_of_flares_this_day.append(0)
+        
+
+    ar_data = flare_mission_sim.load_ar_data()
+    ar_data2 = ar_data[fm.PHASE_E[0]: fm.PHASE_E[1]]
+    ar_numbers = ar_data2['number'].values
+
+    for key_date in unique_dates:
+        num, noaa,hpc_x, hpc_y, mcintosh,hale, numspots = flare_mission_sim.get_ars_for_day(key_date, ar_data2)
+      #  total_ars = ar_data2.loc[key_date]['number']
+        total_ars_per_flareday.append(num)
+
+    non_flaring_regions_per_flareday = np.array(total_ars_per_flareday) - np.array(number_of_flaring_regions[0:329])
+    ind = np.where(non_flaring_regions_per_flareday < 0)
+    non_flaring_regions_per_flareday[ind] = 0
+    print(non_flaring_regions_per_flareday)
+ #   print(number_of_flaring_regions[0:329])
+  #  print(total_ars_per_flareday)
+    
+    
+    ar_hist = plt.hist(ar_numbers, bins = np.linspace(0,12,13), align = 'mid')
+    
+    h = plt.hist(number_of_flaring_regions,bins = np.linspace(0,6,7), align = 'mid')
+
+    weights2 = np.ones_like(number_of_flaring_regions) / len(number_of_flaring_regions)
+    h2 = plt.hist(number_of_flaring_regions, bins = np.linspace(0,6,7), weights=weights2, align = 'mid')
+
+    m = np.max(number_of_flares_this_day)
+    h3 = plt.hist(number_of_flares_this_day, bins = np.linspace(0,m, m+1), align = 'mid')
+
+    non_flaring_ar_hist = plt.hist(non_flaring_regions_per_flareday, bins = np.linspace(0,12,13), align = 'mid')
+    
+    
+    plt.figure(2,figsize=(10,8))
+    plt.subplots_adjust(left = 0.1, right = 0.95, top = 0.95)
+
+    plt.subplot(2,2,1)
+    plt.bar(ar_hist[1][0:-1], ar_hist[0])
+    plt.ylabel('Number of days', fontsize=12)
+    plt.xlabel('Number of ARs on a given day', fontsize=12)
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
+    plt.tick_params(labelsize=12)
+    plt.figtext(0.45, 0.90, 'a)', fontsize=14)
+    
+    
+    
+    plt.subplot(2,2,3)
+    plt.bar(h[1][0:-1],h[0])
+    plt.ylabel('Number of days', fontsize=12)
+    plt.xlabel('Number of major flaring regions in a given day', fontsize=12)
+    for j in range(0,6):
+        plt.text(j-0.2,h[0][j] + 10,int(h[0][j]))
+   # plt.savefig('number_of_flaring_regions_bar.pdf')
+    plt.tick_params(labelsize=12)
+    plt.figtext(0.45, 0.45, 'c)', fontsize=14)
+    
+   # plt.figure(2)
+ #   plt.subplot(2,2,4)
+ #   plt.bar(h2[1][0:-1],h2[0])
+  #  plt.ylabel('Fraction of days', fontsize=12)
+  #  plt.xlabel('Number of major flaring regions in a given day', fontsize=12)
+   # for j in range(0,6):
+   #     plt.text(j-0.2,h2[0][j] + 0.01,np.round(h2[0][j],decimals=3))
+   # plt.savefig('number_of_flaring_regions_normed_bar.pdf')
+   # plt.tick_params(labelsize=12)
+   # plt.figtext(0.90, 0.45, 'd)', fontsize=14)
+
+
+    plt.subplot(2,2,2)   
+    plt.bar(h3[1][0:-1],h3[0])
+    plt.ylabel('Number of days', fontsize=12)
+    plt.xlabel('Number of major flares occuring on a given day', fontsize=12)
+    for j in range(0,m):
+        plt.text(j-0.3,h3[0][j] + 10,int(h3[0][j]))
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
+    plt.tick_params(labelsize=12)
+    plt.figtext(0.90, 0.90, 'b)', fontsize=14)
+
+
+    # new panel
+    plt.subplot(2,2,4)
+    plt.bar(non_flaring_ar_hist[1][0:-1], non_flaring_ar_hist[0])
+    plt.ylabel('Number of days', fontsize=12)
+    plt.xlabel('Number of non-flaring ARs on days with a major flare', fontsize=12)
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
+    plt.tick_params(labelsize=12)
+    plt.figtext(0.90, 0.45, 'd)', fontsize=14)
+    
+    
+    plt.savefig('ar_data_exploration.pdf')
+    
+    plt.show()
+
+
+    
+
+    
+    full_durations = []
+    impulsive_durations = []
+    for i, f in flares5.iterrows():
+        fulldur = (f['end_time'] - i).total_seconds()
+        impdur = (f['peak_time'] - i).total_seconds()
+        full_durations.append(fulldur)
+        impulsive_durations.append(impdur)
+        
+        
+    plt.figure(7)
+    plt.hist(np.asarray(full_durations) / 60., bins = 40)
+    plt.ylabel('N', fontsize=12)
+    plt.xlabel('Flare duration (minutes)', fontsize=12)
+    plt.savefig('flare_durations_hist.pdf')
+    
+    print(max(full_durations))
+    
+    h = np.histogram(number_of_flaring_regions,bins = np.linspace(0,6,7))
+
+
+    
+    
+    print(h)
+        
+    
+
+
+

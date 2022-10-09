@@ -1,0 +1,48 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+#from flare_mission_sim import flare_mission_sim as ms
+
+import flare_mission_sim as ms
+#import flare_mission_sim as fm
+import __init__ as fm
+
+import ./fov as FOV
+
+# read in orbit events
+eclipse, saa, contacts, polar = ms.read_orbit_events()
+
+print(f'Number of eclipses: {len(eclipse)} ({len(eclipse) / len(polar) * 100:0.2f}%)')
+print(f'Number of SAA passages: {len(saa)} ({len(saa) / len(polar) * 100:0.2f}%)')
+print(f'Number of contacts: {len(contacts)} ({len(contacts) / len(polar) * 100:0.2f}%)')
+print(f'Number of polar passages: {len(polar)}')
+
+dt_eclipse_min = (eclipse.values - eclipse.index).total_seconds() / 60.0
+dt_saa_min = (saa.values - saa.index).total_seconds() / 60.0
+if polar is not None:
+    dt_polar_min = (polar.values - polar.index).total_seconds() / 60.0
+
+dt_orbit_min = (polar.index[1:] - polar.index[0:-1]).total_seconds() / 60.0
+dt_contacts_min = (contacts.index[1:] - contacts.index[0:-1]).total_seconds() / 60.0
+
+
+data_list = [dt_eclipse_min, dt_saa_min, dt_polar_min, dt_orbit_min, dt_contacts_min]
+title_list = ['eclipse', 'saa', 'polar', 'orbit', 'time between contacts']
+
+print(f'Average deg per min: {360 / np.mean(dt_orbit_min):0.2f} deg/min')
+print(f'Average min per deg: {np.mean(dt_orbit_min) / 360.0:0.2f} min/deg')
+print(f'Average deg range per polar: {360 / np.mean(dt_orbit_min) * np.mean(dt_polar_min):0.2f} deg')
+
+for this_data, this_title in zip(data_list, title_list):
+    bins = np.arange(np.floor(this_data.min()), np.ceil(this_data.max()))
+    fig = plt.figure()
+    plt.hist(this_data, bins=bins)
+    plt.axvline(np.average(this_data), label=f'average {np.average(this_data):0.2f}')
+    plt.title(this_title)
+    plt.ylabel('Number')
+    plt.xlabel('Duration [min]')
+    plt.xlim(bins.min(), bins.max())
+    plt.legend()
+    plt.savefig(fm.in_output_dir(f'{this_title}_histogram', 'pdf'))
+    plt.close()
+

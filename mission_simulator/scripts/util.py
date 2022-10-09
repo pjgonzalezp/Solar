@@ -1,0 +1,415 @@
+
+"""This file contains a number of different utility functions"""
+import pandas as pd
+import datetime
+import numpy as np
+import copy
+import os
+import astropy.units as u
+#import flare_mission_sim as fm
+import __init__ as fm
+#from flare_mission_sim import flare_mission_sim
+import flare_mission_sim
+
+# Utility functions to manipulate pandas dataframes
+# ----------------
+# ---------------------------------
+
+
+def flareclass_to_flux(goes_class_str):
+    """copied from sunpy"""
+    if not isinstance(goes_class_str, type('str')):
+        raise TypeError("Input must be a string")
+
+    GOES_CONVERSION_DICT = {'X': u.Quantity(1e-4, "W/m^2"),
+                            'M': u.Quantity(1e-5, "W/m^2"),
+                            'C': u.Quantity(1e-6, "W/m^2"),
+                            'B': u.Quantity(1e-7, "W/m^2"),
+                            'A': u.Quantity(1e-8, "W/m^2")}
+
+    # invert the conversion dictionary
+    # conversion_dict = {v: k for k, v in GOES_CONVERSION_DICT.items()}
+    return float(goes_class_str.upper()[1:]) * GOES_CONVERSION_DICT[goes_class_str.upper()[0]]
+
+
+def extract_series_at_time(ts, time, interpolate=False):
+    """
+    Return the value at the requested time for a given pandas Series object.
+
+    If the requested time is not an exact match for an entry in the Series
+    object, by default the returned value is the value for the entry that most
+    closely precedes the requested time.
+
+    Parameters
+    ----------
+    ts : `pandas.Series`
+        The pandas Series object indexed by time
+    time : various
+        The requested time
+    interpolate : `bool`
+        If ``True``, the returned value will be interpolated from the nearest
+        entries.  Defaults to ``False``.
+    """
+    target_time = pd.to_datetime(time)
+
+    # The desired time is an entry in the series
+    if target_time in ts.index:
+        return ts.loc[target_time]
+
+    # Add the specified time to the index, which is automatically popoulated with NaN
+    modified_index = ts.index.append(pd.Index([target_time]))
+    ts1 = ts.reindex(modified_index).sort_index()
+
+    # Fill in the missing value, either with interpolation or from the preceding entry
+    if interpolate:
+        return (ts1.interpolate('time')).loc[target_time]
+    else:
+        return (ts1.ffill()).loc[target_time]
+
+
+def time_in_range(start, end, x):
+    """Return true if x is in the range [start, end]"""
+    if start <= end:
+        return start <= x <= end
+    else:
+        return start <= x or x <= end
+
+
+def is_in_ranges(dt, range_series, consider_range_days=1):
+    # to speed up look at only closest events
+    close_ranges = range_series[dt - datetime.timedelta(days=consider_range_days):
+                                dt + datetime.timedelta(days=consider_range_days)]
+
+    if len(close_ranges) > 0:
+        nearest_start_loc = np.argmin(np.abs(close_ranges.index - dt))
+
+        # check if it is in previous event range
+        prev_range = [close_ranges.index[nearest_start_loc - 1], close_ranges[nearest_start_loc - 1]]
+        in_prev_range = time_in_range(prev_range[0], prev_range[1], dt)
+
+        # check if it is in the current event range
+        this_range = [close_ranges.index[nearest_start_loc], close_ranges[nearest_start_loc]]
+        in_this_range = time_in_range(this_range[0], this_range[1], dt)
+
+        range_its_in = None
+        if in_prev_range:
+            range_its_in = prev_range
+
+        if in_this_range:
+            range_its_in = this_range
+    else:
+        in_prev_range = False
+        in_this_range = False
+        range_its_in = None
+    return (in_prev_range or in_this_range), range_its_in
+
+
+def concatenate_range_series(ranges1, ranges2):
+    """Given two time range series, concatenate them to remove overlapping ranges."""
+
+    # first, concatenate the two series together and sort
+    new_series = pd.concat([ranges1, ranges2])
+    new_series.sort_index(inplace=True)
+
+    # now, search through new series and identify overlapping intervals
+    drop_indices = []
+    for i, t in enumerate(new_series):
+        # check if interval i is wholly contained in interval i-1
+        if (i > 0) and (new_series.index[i] < new_series[i - 1]) and (new_series[i] < new_series[i - 1]):
+            drop_indices.append(i)
+        # check if interval i is partially contained in interval i-1. Adjust interval i-1 and drop interval i
+        elif (i > 0) and (new_series.index[i] < new_series[i - 1]) and (new_series[i] > new_series[i - 1]):
+            new_series[i - 1] = new_series[i]
+            drop_indices.append(i)
+
+    new_series.drop(new_series.index[drop_indices], inplace=True)
+    return new_series
+
+
+def shuffle_concatenated_series(eclipse_and_saa, contacts):
+    offset = datetime.timedelta(0, int(np.random.uniform(low=0, high=86400)))
+    eclipse_and_saa2 = eclipse_and_saa + offset
+    eclipse_and_saa2.index = eclipse_and_saa.index + offset
+    contacts2 = copy.deepcopy(contacts)
+    contacts2.index = contacts.index + offset
+    return eclipse_and_saa2, contacts2
+
+
+def shift_time_series(series_or_dataframe, timedelta):
+    """Given a pandas series or dataframes, shift it by a set timedelta."""
+    series_or_dataframe.index = series_or_dataframe.index + timedelta
+    return series_or_dataframe
+
+
+# Other utility functions
+# -----------------------
+
+def mcintosh_class_to_rank(mcintosh_class):
+    """Given a mcintosh classification return an integer representing it's rank likelihood to flare."""
+    major_tier = {"F": 1, "E": 2, "D": 3, "C": 4, "H": 5, "B": 6}
+    minor_tier = {"K": 0.1, "H": 0.2, "A": 0.3, "S": 0.4, "R": 0.5}
+    rank_value = major_tier.get(mcintosh_class[0], 7) + minor_tier.get(mcintosh_class[1], 0.6)
+    return rank_value
+
+
+def mcintosh_class_productivity(mcintosh_class):
+    """given a mcintosh classification, estimate its flare productivity. Flare productivity is estimated
+    by averaging the flare rate of each of the three given McIntosh parameters, as suggested in Bornmann & Shaw 1994."""
+    first_param_productivity = {"F": 2.5, "E": 0.8, "D": 0.2, "C": 0.07, "H": 0.06, "B": 0.03, "A": 0.012}
+    second_param_productivity = {"K": 1.0, "H": 0.2, "A": 0.19, "S": 0.07, "R": 0.06, "X": 0.02}
+    third_param_productivity = {"C": 1.2, "I": 0.3, "O": 0.07, "X": 0.04}
+
+    average_productivity = (first_param_productivity.get(mcintosh_class[0]) +
+                                second_param_productivity.get(mcintosh_class[1]) +
+                                third_param_productivity.get(mcintosh_class[2])) / 3.0
+
+    return average_productivity
+
+
+def mcintosh_class_productivity_bloomfield_2012(mcintosh_class, use_bornmann_shaw = False):
+    """given a mcintosh classification, estimate its flare productivity. Flare productivity is taken from the values
+    compiled by Bloomfield et al. 2012. Here we use M-class flare rates, as we are interested in larger events. Keyword
+    allows the original Kihldal/Bornmann & Shaw values to be used insteaad."""
+
+    if use_bornmann_shaw:
+        bloomfield_productivities =  pd.read_csv(os.path.join(fm.data_dir, 'mcintosh_flare_rates_bornmann_shaw_1994.csv'), index_col=0)
+    else:
+        bloomfield_productivities = pd.read_csv(os.path.join(fm.data_dir, 'mcintosh_flare_rates_bloomfield_2012.csv'), index_col=0)
+        
+    if mcintosh_class in bloomfield_productivities.index:
+        productivity = bloomfield_productivities.loc[mcintosh_class].values[0]
+    else:
+        # if class is not in the Bloomfield 2012 table, fall back to the 'averaging' method.
+        productivity = mcintosh_class_productivity(mcintosh_class)
+    return productivity
+    
+
+def find_unique_hale_classes(verbose=False):
+    '''The format of the Hale (Mt Wilson) active region classification varies throughout
+    the AR dataset, e.g. 'BETA-GAMMA-DELTA' vs 'BETAGAMMADELTA'. This function searches the dataset
+    to find all variations on each Hale classification of interest and return lists of those variations.'''
+
+    ar_data = flare_mission_sim.load_ar_data()
+    tmp = ar_data['hale_classification'].values
+
+    unique_hales = []
+    for t in tmp:
+        t2 = str(t)
+        hales = t2.split(sep=',') 
+        for h in hales: 
+            if h not in unique_hales: 
+                unique_hales.append(h)
+
+    if verbose:
+        print(' ')
+        print('Found the following Hale classifications:')
+        print('-------------')
+        print(unique_hales)
+        print('-------------')
+        print(' ')
+
+    alpha_labels = []
+    beta_labels = []
+    beta_gamma_labels = []
+    beta_delta_labels = []
+    beta_gamma_delta_labels = []
+    gamma_labels = []
+    gamma_delta_labels = []
+    unclassified_labels = []
+    
+    for u in unique_hales:
+        #identify alpha regions - lump them all in one category
+        if u.startswith('ALPHA'):
+            alpha_labels.append(u)
+        #identify beta regions
+        elif 'BETA' in u and 'GAMMA' not in u and 'DELTA' not in u:
+            beta_labels.append(u)
+        #identify beta-gamma regions
+        elif 'BETA' in u and 'GAMMA' in u and 'DELTA' not in u:
+            beta_gamma_labels.append(u)
+        #identify beta-delta regions
+        elif 'BETA' in u and 'DELTA' in u and 'GAMMA' not in u:
+            beta_delta_labels.append(u)
+        #idenfity beta-gamma-delta_regions
+        elif 'BETA' in u and 'GAMMA' in u and 'DELTA' in u:
+            beta_gamma_delta_labels.append(u)
+        #identify gamma regions
+        elif 'GAMMA' in u and 'BETA' not in u and 'DELTA' not in u:
+            gamma_labels.append(u)
+        #identify gamma-delta regions
+        elif 'GAMMA' in u and 'DELTA' in u and 'BETA' not in u:
+            gamma_delta_labels.append(u)
+        else:
+            unclassified_labels.append(u)
+
+
+    if verbose:
+        print(' ')
+        print('Alpha labels')
+        print('----------')
+        print(alpha_labels)
+    
+        print(' ')
+        print('Beta labels')
+        print('----------')
+        print(beta_labels)
+
+        print(' ')
+        print('Beta-gamma labels')
+        print('----------')
+        print(beta_gamma_labels)
+
+        print(' ')
+        print('Beta-delta labels')
+        print('----------')
+        print(beta_delta_labels)
+
+        print(' ')
+        print('Beta-gamma-delta labels')
+        print('----------')
+        print(beta_gamma_delta_labels)
+
+        print(' ')
+        print('Gamma labels')
+        print('----------')
+        print(gamma_labels)
+
+        print(' ')
+        print('Gamma-delta labels')
+        print('----------')
+        print(gamma_delta_labels)
+
+        print(' ')
+        print('Unclassified labels')
+        print('----------')
+        print(unclassified_labels)
+
+
+    allowed_labels = {'alpha':alpha_labels,
+                       'beta': beta_labels,
+                       'beta_delta': beta_delta_labels,
+                       'beta_gamma': beta_gamma_labels,
+                       'beta_gamma_delta' : beta_gamma_delta_labels,
+                       'gamma': gamma_labels,
+                       'gamma_delta': gamma_delta_labels,
+                       'unclassified': unclassified_labels}
+                          
+        
+    return allowed_labels
+
+
+def hale_class_productivity(hale_class, allowed_labels):
+    """Given a Hale classification of an active region, estimate its flare productivity. Flare productivity 
+    is estimated by combining flare statistics data from Guo et al., MNRAS, 441, 2208, 2014 and Hale class
+    occurrence data from Jaeggli et al., ApJL, 820, L11, 2016."""
+
+
+    # match the input Hale class string to the correct category
+    for name, label_list in allowed_labels.items():
+        if hale_class in label_list:
+            hale = name
+            break
+   
+
+    # calculate 'productivity' based on numbers from Jaeggli et al. 2016 and Guo et al. 2014
+    hale_class_flare_percents = {'alpha':0.0, 'beta':10.75, 'beta_gamma': 10.75, 'gamma':19.90, 'beta_delta':6.62,
+                                     'gamma_delta':0.47, 'beta_gamma_delta':62.25, 'unclassified': 0.0}
+    hale_class_occurrence_rates = {'alpha':0.1946, 'beta': 0.6423, 'beta_gamma': 0.6423, 'gamma': 0.0004, 'beta_delta': 0.0084,
+                                       'gamma_delta':0.0004, 'beta_gamma_delta': 0.0437, 'unclassified':1.0}
+
+    hale_class_weight = hale_class_flare_percents.get(hale) / hale_class_occurrence_rates.get(hale)
+
+    return hale_class_weight
+
+
+def mcintosh_class_to_random_rank(mcintosh_class):
+    """Return a random number between 0 and 1 to represent choosing an AR arbitrarily"""
+
+    return np.random.uniform()
+
+
+def noaanum_to_flare_index_rank(noaa_num, flare_index_entry):
+    """Return a rank value based on flare activity in the previous 24 hours for each AR"""
+
+    # find the NOAA number active region in the flare_index_entry 
+    loc = np.where(flare_index_entry['active_regions'] == np.int(noaa_num))[0]
+
+    #if there is a flare index for this NOAA num, extract it. Otherwise, flare index = 0
+    if (len(loc) > 0):
+        rank_value = flare_index_entry['flare_index'][loc[0]]
+    else:
+        rank_value = 0.0
+
+    return rank_value
+    
+    
+
+def generate_flare_index():
+    """Generate a DataFrame containing flare index values for each NOAA region over time.
+    The flare index is defined as the sum of the peak GOES fluxes of all flares from an AR
+    over 24 hours."""
+
+    flares = flare_mission_sim.load_flare_data_from_hdf5()
+    flares2 = flares[flare_mission_sim.fm.PHASE_E[0]:flare_mission_sim.fm.PHASE_E[1]]
+    flares3 =  flare_mission_sim.fix_flare_positions_sff(flares2)
+    flares4 = flare_mission_sim.fix_flare_positions_manual(flares3)
+   
+    unique_dates = []
+    flare_ar_list = []
+    
+    ar_flare_index_list = []
+    for t in flares4.index:
+        key_date = t.date().isoformat()
+        if not key_date in unique_dates:
+            unique_dates.append(key_date)
+
+    for key_date in unique_dates:
+        #get all the flares for this day
+        todays_flares = flares4[key_date]
+
+        #get all the ARs that produced flares today
+        flare_ars_today = todays_flares['noaa'].unique()
+
+        #for each AR, sum up the peak flare fluxes from it to calculate flare index value
+        flare_indices_today = []
+        for ar in flare_ars_today:
+            flare_entries = todays_flares[todays_flares['noaa'] == ar]
+            total_flux = 0
+            for index, row in flare_entries.iterrows():
+                flux = flareclass_to_flux(row['goes_class']).value
+                total_flux += flux
+            flare_indices_today.append(total_flux)
+
+        ar_flare_index_list.append(flare_indices_today)
+        flare_ar_list.append(flare_ars_today)
+
+    
+    df = pd.DataFrame(index = unique_dates, data = {'active_regions':flare_ar_list,
+                                                            'flare_index': ar_flare_index_list})
+    return df
+    
+
+def flare_location_hemisphere_count(flare_data_frame):
+    """
+    Return a count of the number of flares in the eastern and western hemispheres, and in the
+    northern and southern hemispheres.
+
+    Parameters
+    ----------
+    flare_data_frame : `~pandas.DataFrame`
+        A data frame of flare positions and times.
+
+    Returns
+    -------
+    ~dict
+        A dictionary that gives the number of flares in the input flare list that lie in each
+        hemisphere, indexed by hopefully self-explanatory dictionary keys.
+    """
+    eastern = np.sum(flare_data_frame['hpc_x'] < 0)
+    western = np.sum(flare_data_frame['hpc_x'] > 0)
+    hpc_x_is_zero = np.sum(flare_data_frame['hpc_x'] == 0)
+    northern = np.sum(flare_data_frame['hpc_y'] > 0)
+    southern = np.sum(flare_data_frame['hpc_y'] < 0)
+    hpc_y_is_zero = np.sum(flare_data_frame['hpc_y'] == 0)
+    return {'eastern': eastern, 'western': western, 'hpc_x_is_zero': hpc_x_is_zero,
+            'northern': northern, 'southern': southern, 'hpc_y_is_zero': hpc_y_is_zero}

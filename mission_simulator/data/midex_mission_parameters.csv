@@ -1,0 +1,6 @@
+parameter,value,units
+central_fov_diameter,300,arcsec
+full_fov_diameter,588,arcsec
+date_mission_start,2025/07/01 00:00,%Y/%m/%d %H:%M
+date_mission_end,2027/07/01 00:00,%Y/%m/%d %H:%M
+file_orbit_events,midex_orbit_events.csv,

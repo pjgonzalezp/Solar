@@ -1,0 +1,7 @@
+parameter,value,units
+mission_name,foxsi
+central_fov_diameter,300,arcsec
+full_fov_diameter,588,arcsec
+date_mission_start,2011/02/02 00:00,%Y/%m/%d %H:%M
+date_mission_end,2015/01/01 00:00,%Y/%m/%d %H:%M
+file_orbit_events,foxsi-smex_orbit_events_3.csv
